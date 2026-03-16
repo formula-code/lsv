@@ -23,6 +23,8 @@ command_order = [
     'Update',
     'Show',
     'Compare',
+    'InitializeDiffcheck',
+    'MeasureImpacted',
 ]
 
 
