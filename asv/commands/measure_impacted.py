@@ -203,6 +203,7 @@ class MeasureImpacted(Command):
             return 1
         return 0
 
-    # @classmethod
-    # def _on_step_results(cls, results, deltas, step_id):
-    #     """No-op hook. Override in a fork subclass to persist step results."""
+    @classmethod
+    def _on_step_results(cls, results, deltas, step_id):
+        """No-op hook. Override in a fork subclass to persist step results."""
+        pass
