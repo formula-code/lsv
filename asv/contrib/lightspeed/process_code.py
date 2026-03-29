@@ -9,7 +9,7 @@ from functools import lru_cache
 import sqlite3
 import hashlib
 from pathlib import Path
-from typing import Optional, Union
+from typing import List, Optional, Union
 from array import array
 from subprocess import run, CalledProcessError
 
@@ -35,7 +35,7 @@ def debug_blob_to_code(blob):
     return blob.split(";\n")
 
 
-def methods_to_checksums(blocks) -> [int]:
+def methods_to_checksums(blocks) -> List[int]:
     checksums = []
     for block in blocks:
         checksums.append(to_signed(zlib.crc32(block.encode("UTF-8"))))
@@ -43,7 +43,7 @@ def methods_to_checksums(blocks) -> [int]:
     return checksums
 
 
-def checksums_to_blob(checksums: [int]) -> sqlite3.Binary:
+def checksums_to_blob(checksums: List[int]) -> sqlite3.Binary:
     blob = array(CHECKUMS_ARRAY_TYPE, checksums)
     data = blob.tobytes()
     return sqlite3.Binary(data)
@@ -293,8 +293,8 @@ def create_fingerprint_source(source_code, lines, ext="py"):
     return create_fingerprint(module, lines)
 
 
-def create_fingerprint(module: Module, covered_lines: list[int]) -> list[int]:
-    blocks: list[Block] = module.blocks
+def create_fingerprint(module: Module, covered_lines: List[int]) -> List[int]:
+    blocks: List[Block] = module.blocks
     method_reprs = []
     line_index = 0
     sorted_lines = sorted(covered_lines)
