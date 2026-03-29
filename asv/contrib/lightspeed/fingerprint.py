@@ -34,7 +34,8 @@ def file_method_checksums(path: str) -> Tuple[List[int], Optional[str]]:
     source, sha = read_source_sha(path)
     if source is None:
         return [], None
-    module = Module(source_code=source)
+    ext = "py" if path.endswith(".py") else "c"
+    module = Module(source_code=source, ext=ext)
     return module.method_checksums, sha
 
 

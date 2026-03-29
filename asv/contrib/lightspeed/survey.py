@@ -22,7 +22,7 @@ from asv_runner._aux import update_sys_path
 from asv_runner.discovery import get_benchmark_from_name
 
 from .deps_db import BenchmarkId, LightspeedDB
-from .fingerprint import coverage_fingerprint
+from .fingerprint import coverage_fingerprint, file_method_checksums
 
 
 # --------------------------------------------------------------------------- #
@@ -107,6 +107,7 @@ def survey_one(
     if skip:
         return False, "benchmark_skipped", {}
 
+    modules_before = set(sys.modules.keys())
     tracer_before = sys.gettrace()
     profiler_before = sys.getprofile()
 
@@ -161,6 +162,38 @@ def survey_one(
         if sha is None:
             continue
         file_deps[fname] = (fp, sha)
+
+    # Track C extension modules loaded during benchmark execution.
+    # When coverage finds no Python files in source_root (e.g. C extension
+    # packages installed non-editable), map loaded .so/.pyd modules back to
+    # their C/Cython source files in source_root.
+    modules_after = set(sys.modules.keys())
+    new_modules = modules_after - modules_before
+    for mod_name in new_modules:
+        mod = sys.modules.get(mod_name)
+        if mod is None:
+            continue
+        mod_file = getattr(mod, "__file__", None) or ""
+        if not (mod_file.endswith(".so") or mod_file.endswith(".pyd")):
+            continue
+        # Check if this extension belongs to a package under source_root
+        pkg_root = mod_name.split(".")[0]
+        ext_source_dir = os.path.join(source_root, pkg_root)
+        if not os.path.isdir(ext_source_dir):
+            # Also check if source_root itself is the package directory
+            if not os.path.isdir(source_root):
+                continue
+        scan_dir = ext_source_dir if os.path.isdir(ext_source_dir) else source_root
+        for root, _, files in os.walk(scan_dir):
+            for f in files:
+                if f.endswith((".c", ".cpp", ".pyx", ".pxd", ".h")):
+                    fpath = os.path.join(root, f)
+                    fp, sha = file_method_checksums(fpath)
+                    if sha is not None:
+                        file_deps[fpath] = (fp, sha)
+
+    if not file_deps:
+        return False, "no_source_root_coverage", {}
 
     return True, None, file_deps
 
