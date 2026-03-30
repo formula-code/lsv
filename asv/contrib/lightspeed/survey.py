@@ -52,6 +52,54 @@ def _uses_low_level_thread(path: str) -> bool:
 
 
 # --------------------------------------------------------------------------- #
+# C extension dependency tracking                                               #
+# --------------------------------------------------------------------------- #
+
+def _add_extension_deps(
+    file_deps: Dict[str, Tuple[list, str]],
+    source_root: str,
+) -> None:
+    """
+    Scan ``sys.modules`` for loaded C extension modules (``.so``/``.pyd``)
+    whose top-level package has source files under *source_root*.  For each
+    match, add all C/Cython source files in that package directory to
+    *file_deps* with whole-file fingerprints.
+
+    This is used as a fallback when coverage.py finds no Python files inside
+    *source_root* (typical for C extension packages installed non-editable).
+    """
+    # Collect packages that have extension modules, deduplicate scan dirs
+    seen_dirs: Set[str] = set()
+    for mod in sys.modules.values():
+        if mod is None:
+            continue
+        mod_file = getattr(mod, "__file__", None) or ""
+        if not (mod_file.endswith(".so") or mod_file.endswith(".pyd")):
+            continue
+        mod_name = getattr(mod, "__name__", "")
+        if not mod_name:
+            continue
+        pkg_root = mod_name.split(".")[0]
+        ext_source_dir = os.path.join(source_root, pkg_root)
+        if os.path.isdir(ext_source_dir):
+            scan_dir = ext_source_dir
+        elif os.path.isdir(source_root):
+            scan_dir = source_root
+        else:
+            continue
+        if scan_dir in seen_dirs:
+            continue
+        seen_dirs.add(scan_dir)
+        for root, _, files in os.walk(scan_dir):
+            for f in files:
+                if f.endswith((".c", ".cpp", ".pyx", ".pxd", ".h")):
+                    fpath = os.path.join(root, f)
+                    fp, sha = file_method_checksums(fpath)
+                    if sha is not None:
+                        file_deps[fpath] = (fp, sha)
+
+
+# --------------------------------------------------------------------------- #
 # Single-benchmark survey                                                       #
 # --------------------------------------------------------------------------- #
 
@@ -107,7 +155,6 @@ def survey_one(
     if skip:
         return False, "benchmark_skipped", {}
 
-    modules_before = set(sys.modules.keys())
     tracer_before = sys.gettrace()
     profiler_before = sys.getprofile()
 
@@ -141,56 +188,32 @@ def survey_one(
     except Exception as exc:
         return False, f"coverage_read_error: {exc}", {}
 
-    if not measured:
-        return False, "no_coverage_data", {}
-
     file_deps: Dict[str, Tuple[list, str]] = {}
-    for fname in measured:
-        # Only track files inside the source root we care about.
-        try:
-            rel = os.path.relpath(fname, source_root)
-        except ValueError:
-            continue
-        if rel.startswith(".."):
-            continue
-
-        lines: Set[int] = set(cov_data.lines(fname) or [])
-        if not lines:
-            continue
-
-        fp, sha = coverage_fingerprint(fname, lines)
-        if sha is None:
-            continue
-        file_deps[fname] = (fp, sha)
-
-    # Track C extension modules loaded during benchmark execution.
-    # When coverage finds no Python files in source_root (e.g. C extension
-    # packages installed non-editable), map loaded .so/.pyd modules back to
-    # their C/Cython source files in source_root.
-    modules_after = set(sys.modules.keys())
-    new_modules = modules_after - modules_before
-    for mod_name in new_modules:
-        mod = sys.modules.get(mod_name)
-        if mod is None:
-            continue
-        mod_file = getattr(mod, "__file__", None) or ""
-        if not (mod_file.endswith(".so") or mod_file.endswith(".pyd")):
-            continue
-        # Check if this extension belongs to a package under source_root
-        pkg_root = mod_name.split(".")[0]
-        ext_source_dir = os.path.join(source_root, pkg_root)
-        if not os.path.isdir(ext_source_dir):
-            # Also check if source_root itself is the package directory
-            if not os.path.isdir(source_root):
+    if measured:
+        for fname in measured:
+            # Only track files inside the source root we care about.
+            try:
+                rel = os.path.relpath(fname, source_root)
+            except ValueError:
                 continue
-        scan_dir = ext_source_dir if os.path.isdir(ext_source_dir) else source_root
-        for root, _, files in os.walk(scan_dir):
-            for f in files:
-                if f.endswith((".c", ".cpp", ".pyx", ".pxd", ".h")):
-                    fpath = os.path.join(root, f)
-                    fp, sha = file_method_checksums(fpath)
-                    if sha is not None:
-                        file_deps[fpath] = (fp, sha)
+            if rel.startswith(".."):
+                continue
+
+            lines: Set[int] = set(cov_data.lines(fname) or [])
+            if not lines:
+                continue
+
+            fp, sha = coverage_fingerprint(fname, lines)
+            if sha is None:
+                continue
+            file_deps[fname] = (fp, sha)
+
+    # Fallback: if coverage found no Python files in source_root (common for
+    # C extension packages installed non-editable from site-packages), scan
+    # all loaded modules for .so/.pyd extensions whose package has source
+    # files under source_root, and add those C/Cython sources as deps.
+    if not file_deps:
+        _add_extension_deps(file_deps, source_root)
 
     if not file_deps:
         return False, "no_source_root_coverage", {}
