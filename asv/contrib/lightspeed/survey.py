@@ -189,6 +189,10 @@ def survey_one(
         return False, f"coverage_read_error: {exc}", {}
 
     file_deps: Dict[str, Tuple[list, str]] = {}
+    # A covered source file whose fingerprint can't be computed would otherwise
+    # be dropped silently, making the benchmark blind to changes in it.  Record
+    # the first such file so the caller can mark the benchmark always_affected.
+    uncomputable: Optional[str] = None
     if measured:
         for fname in measured:
             # Only track files inside the source root we care about.
@@ -206,10 +210,14 @@ def survey_one(
                 fp, sha = file_method_checksums(fname)
                 if sha is not None:
                     file_deps[fname] = (fp, sha)
+                elif uncomputable is None:
+                    uncomputable = fname
                 continue
 
             fp, sha = coverage_fingerprint(fname, lines)
             if sha is None:
+                if uncomputable is None:
+                    uncomputable = fname
                 continue
             file_deps[fname] = (fp, sha)
 
@@ -217,6 +225,10 @@ def survey_one(
     # Previously this only ran as a fallback when no Python coverage was found,
     # which meant C/Cython source changes were invisible in mixed projects.
     _add_extension_deps(file_deps, source_root)
+
+    if uncomputable is not None:
+        # Fall back to always-re-run rather than silently under-covering.
+        return False, f"uncomputable fingerprint: {uncomputable}", {}
 
     if not file_deps:
         return False, "no_source_root_coverage", {}

@@ -159,6 +159,79 @@ def _timing_params(rounds, repeat, warmup_time) -> dict:
     return p
 
 
+def _git(repo_root, *args, check=True):
+    """Run ``git <args>`` in ``repo_root`` and return stripped stdout."""
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=repo_root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if check and proc.returncode != 0:
+        raise ASVError(
+            f"git {' '.join(args)} failed in {repo_root}: "
+            f"{proc.stderr.decode(errors='replace').strip()}"
+        )
+    return proc.stdout.decode(errors="replace").strip()
+
+
+def _git_toplevel(source_root):
+    """Return the git worktree root containing ``source_root``, or None if not a repo."""
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=source_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except OSError:
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.decode(errors="replace").strip() or None
+
+
+def _measure_at_commit(repo_root, base_commit, source_root, measure):
+    """
+    Run ``measure()`` with the tracked working tree reset to ``base_commit``,
+    preserving untracked files (e.g. staged ``benchmark_*.py``), then restore.
+
+    Two cases:
+
+    * HEAD already *is* ``base_commit`` (the normal in-container state after the
+      entrypoint's ``git reset --hard <base>``, with the change under test applied
+      as uncommitted tracked modifications).  A plain ``git stash push`` — *not*
+      ``--include-untracked`` — reverts tracked files to base while leaving
+      untracked benchmark files in place; ``git stash pop`` restores the patch.
+    * HEAD differs from ``base_commit`` (defensive fallback): stash the patched
+      source path, ``git checkout <base> -- <path>`` to reset just that path to
+      base, measure, then restore the path to HEAD and pop the stash.
+    """
+    head = _git(repo_root, "rev-parse", "HEAD")
+    base = _git(repo_root, "rev-parse", base_commit)
+    if head == base:
+        out = _git(repo_root, "stash", "push", "-m", "lsv-baseline")
+        stashed = "No local changes to save" not in out
+        try:
+            return measure()
+        finally:
+            if stashed:
+                _git(repo_root, "stash", "pop")
+    else:
+        rel = os.path.relpath(source_root, repo_root)
+        out = _git(repo_root, "stash", "push", "-m", "lsv-baseline", "--", rel)
+        stashed = "No local changes to save" not in out
+        try:
+            _git(repo_root, "checkout", base, "--", rel)
+            try:
+                return measure()
+            finally:
+                _git(repo_root, "checkout", head, "--", rel)
+        finally:
+            if stashed:
+                _git(repo_root, "stash", "pop")
+
+
 def _extract_deltas(
     asv_results,
     benchmarks: Benchmarks,
@@ -359,6 +432,7 @@ class LightspeedSession:
         rounds: Optional[int] = None,
         repeat: Optional[int] = None,
         warmup_time: Optional[float] = None,
+        base_commit: Optional[str] = None,
     ) -> InitResult:
         """
         Survey benchmark dependencies and record baseline timing.
@@ -387,6 +461,16 @@ class LightspeedSession:
         warmup_time : float, optional
             Seconds spent warming up before timing begins.  ``None`` means auto
             (≈1 s for multi-round, ≈5 s for single-round).
+        base_commit : str, optional
+            When set and a baseline must be measured (cache miss or ``force``),
+            stash the working tree, reset the tracked source to this commit,
+            measure, then restore — so the recorded baseline reflects the base
+            commit rather than whatever is currently checked out (e.g. patched
+            code under test).  Untracked files (such as staged ``benchmark_*.py``)
+            are preserved.  Requires ``launch_method`` 'spawn' (the default);
+            'forkserver' is rejected because it pre-imports the suite once and
+            would not reflect the checkout.  ``None`` disables all git side
+            effects and preserves the previous behavior.
         """
         t0 = time.perf_counter()
         phases: Dict[str, float] = {}
@@ -419,16 +503,32 @@ class LightspeedSession:
                 timing=TimingInfo(total_s=time.perf_counter() - t0),
             )
 
-        t1 = time.perf_counter()
-        run_survey(str(self.benchmark_dir), source_root, db, bids)
-        phases["coverage"] = time.perf_counter() - t1
-
         extra_params = _timing_params(rounds, repeat, warmup_time)
-        t2 = time.perf_counter()
         env = self._get_env()
         lm = getattr(self._conf, "launch_method", None) or "auto"
-        asv_results = run_benchmarks(benchmarks, env, extra_params=extra_params, launch_method=lm)
-        phases["benchmarking"] = time.perf_counter() - t2
+        if base_commit and lm == "forkserver":
+            raise ASVError(
+                "base_commit requires launch_method 'spawn': 'forkserver' pre-imports "
+                "the benchmark suite once, so a base-commit checkout would not be "
+                "reflected in the measured baseline."
+            )
+
+        def _measure():
+            t1 = time.perf_counter()
+            run_survey(str(self.benchmark_dir), source_root, db, bids)
+            phases["coverage"] = time.perf_counter() - t1
+            t2 = time.perf_counter()
+            results = run_benchmarks(
+                benchmarks, env, extra_params=extra_params, launch_method=lm
+            )
+            phases["benchmarking"] = time.perf_counter() - t2
+            return results
+
+        repo_root = _git_toplevel(source_root) if base_commit else None
+        if base_commit and repo_root:
+            asv_results = _measure_at_commit(repo_root, base_commit, source_root, _measure)
+        else:
+            asv_results = _measure()
 
         _store_baseline(asv_results, benchmarks, db)
 
