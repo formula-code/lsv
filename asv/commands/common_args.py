@@ -33,7 +33,7 @@ def add_global_arguments(parser, suppress_defaults=True):
     parser.add_argument(
         "--version",
         action="version",
-        version="%(prog)s " + get_version("asv"),
+        version="%(prog)s " + get_version("lsv"),
         help="Print program version",
         **suppressor,
     )

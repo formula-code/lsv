@@ -4,6 +4,6 @@ from importlib_metadata import version as get_version
 
 from asv import plugin_manager  # noqa: F401 Needed to load the plugins
 
-__version__ = get_version("asv")
+__version__ = get_version("lsv")
 
 __all__ = ('__version__',)
