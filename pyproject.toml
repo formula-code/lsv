@@ -17,6 +17,7 @@ dynamic = [
 ]
 dependencies = [
     "asv-runner>=v0.2.1",
+    "coverage",
     "json5",
     "build",
     "tabulate",
