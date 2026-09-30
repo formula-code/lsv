@@ -205,13 +205,7 @@ def survey_one(
 
             lines: Set[int] = set(cov_data.lines(fname) or [])
             if not lines:
-                # File was measured but no line-level data — use whole-file
-                # fingerprint so changes to it still trigger re-runs.
-                fp, sha = file_method_checksums(fname)
-                if sha is not None:
-                    file_deps[fname] = (fp, sha)
-                elif uncomputable is None:
-                    uncomputable = fname
+                # With source=, coverage also lists files that never ran; they are not deps of this benchmark.
                 continue
 
             fp, sha = coverage_fingerprint(fname, lines)
