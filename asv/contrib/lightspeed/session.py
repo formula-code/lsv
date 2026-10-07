@@ -34,6 +34,7 @@ from ...runner import run_benchmarks
 from ... import util
 from .deps_db import BenchmarkId, LightspeedDB, _parse_bid
 from .fingerprint import changed_files_with_fingerprints
+from .project_imports import import_packages, outside_root, probe_imports
 from .survey import run_survey
 
 _DEPS_DB_FILENAME = ".lightspeed_deps.db"
@@ -61,6 +62,23 @@ class BenchmarkError(ASVError):
 
 class NoBenchmarksError(ASVError):
     """No benchmarks were selected or found."""
+
+
+class ProjectShadowed(ASVError):
+    """The benchmark processes import a project package from outside the repository."""
+    def __init__(self, paths):
+        super().__init__("benchmarks import the project from outside the repository: "
+                         + ", ".join(f"{name} -> {path}" for name, path in paths.items()))
+        self.paths = paths
+
+
+def check_project_imports(env, benchmark_dir, launch_method, packages, repo_root):
+    """Raise ProjectShadowed when a package resolves outside ``repo_root`` in a benchmark process."""
+    found = probe_imports(env, benchmark_dir, launch_method, packages) if packages else {}
+    bad = outside_root(found, repo_root)
+    if bad:
+        raise ProjectShadowed(bad)
+    return found
 
 
 # ---------------------------------------------------------------------------
@@ -557,6 +575,7 @@ class LightspeedSession:
         rounds: Optional[int] = None,
         repeat: Optional[int] = None,
         warmup_time: Optional[float] = None,
+        packages: Optional[List[str]] = None,
     ) -> MeasureResult:
         """
         Selectively re-run benchmarks affected by code changes.
@@ -578,6 +597,9 @@ class LightspeedSession:
             Samples per round.  ``None`` means auto.
         warmup_time : float, optional
             Warmup seconds.  ``None`` means auto.
+        packages : list of str, optional
+            Import names of the project.  ``None`` derives them from the changed files.
+            Raises ProjectShadowed before timing when one imports from outside the repository.
         """
         if not from_git_diff and changed_files is None:
             raise ValueError("Provide either from_git_diff=True or changed_files=[...]")
@@ -638,6 +660,8 @@ class LightspeedSession:
         extra_params = _timing_params(rounds, repeat, warmup_time)
         env = self._get_env()
         lm = getattr(self._conf, "launch_method", None) or "auto"
+        root = _git_toplevel(os.path.dirname(paths[0])) or self.repo
+        check_project_imports(env, self.benchmark_dir, lm, packages or import_packages(paths, root), root)
         asv_results = run_benchmarks(filtered, env, extra_params=extra_params, launch_method=lm)
 
         deltas = _extract_deltas(asv_results, filtered, baseline)

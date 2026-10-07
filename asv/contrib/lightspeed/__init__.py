@@ -8,4 +8,6 @@ from .session import (  # noqa: F401
     ConfigError,
     BenchmarkError,
     NoBenchmarksError,
+    ProjectShadowed,
+    check_project_imports,
 )
