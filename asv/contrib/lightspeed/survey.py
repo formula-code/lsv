@@ -12,8 +12,12 @@ Any failure marks the benchmark as always_affected in the DB.
 """
 
 import ast
+import contextlib
+import glob
 import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Dict, Optional, Set, Tuple
 
@@ -100,6 +104,74 @@ def _add_extension_deps(
 
 
 # --------------------------------------------------------------------------- #
+# Child process coverage                                                        #
+# --------------------------------------------------------------------------- #
+
+# Shadows any sitecustomize on the child's path, so it runs that one afterwards.
+_CHILD_SITECUSTOMIZE = """\
+import os, sys
+try:
+    import coverage
+    coverage.process_startup()
+except Exception:
+    pass
+from importlib.machinery import PathFinder
+from importlib.util import module_from_spec
+_here = os.path.dirname(os.path.realpath(__file__))
+_spec = PathFinder.find_spec(
+    "sitecustomize", [p for p in sys.path if os.path.realpath(p or ".") != _here]
+)
+if _spec is not None:
+    _mod = module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+"""
+
+
+@contextlib.contextmanager
+def _child_coverage(source_root: str):
+    """Child Python processes started in the block write coverage data files to the yielded dir."""
+    child_dir = tempfile.mkdtemp(prefix="lsv-cov-")
+    rcfile = os.path.join(child_dir, "coveragerc")
+    with open(rcfile, "w") as f:
+        f.write(
+            "[run]\n"
+            "parallel = True\n"
+            f"data_file = {os.path.join(child_dir, '.coverage')}\n"
+            f"source = {source_root}\n"
+            "omit = */site-packages/*, */dist-packages/*\n"
+            "disable_warnings = no-data-collected, module-not-measured\n"
+        )
+    with open(os.path.join(child_dir, "sitecustomize.py"), "w") as f:
+        f.write(_CHILD_SITECUSTOMIZE)
+
+    saved = {k: os.environ.get(k) for k in ("COVERAGE_PROCESS_START", "PYTHONPATH")}
+    os.environ["COVERAGE_PROCESS_START"] = rcfile
+    os.environ["PYTHONPATH"] = os.pathsep.join(
+        [child_dir] + ([saved["PYTHONPATH"]] if saved["PYTHONPATH"] else [])
+    )
+    try:
+        yield child_dir
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        shutil.rmtree(child_dir, ignore_errors=True)
+
+
+def _child_lines(child_dir: str) -> Dict[str, Set[int]]:
+    """Executed lines per file, read from the child data files in *child_dir*."""
+    lines: Dict[str, Set[int]] = {}
+    for path in glob.glob(os.path.join(child_dir, ".coverage.*")):
+        data = coverage.CoverageData(basename=path)
+        data.read()
+        for fname in data.measured_files():
+            lines.setdefault(fname, set()).update(data.lines(fname) or [])
+    return lines
+
+
+# --------------------------------------------------------------------------- #
 # Single-benchmark survey                                                       #
 # --------------------------------------------------------------------------- #
 
@@ -145,6 +217,10 @@ def survey_one(
         branch=False,
         data_file=None,     # in-memory only
     )
+    # Child processes may be the only place the benchmark runs project code.
+    cov.set_option(
+        "run:disable_warnings", [*cov.get_option("run:disable_warnings"), "no-data-collected"]
+    )
 
     skip = False
     try:
@@ -159,11 +235,13 @@ def survey_one(
     profiler_before = sys.getprofile()
 
     try:
-        cov.start()
-        try:
-            bench.func(*bench._current_params)
-        finally:
-            cov.stop()
+        with _child_coverage(source_root) as child_dir:
+            cov.start()
+            try:
+                bench.func(*bench._current_params)
+            finally:
+                cov.stop()
+            child_lines = _child_lines(child_dir)
     except BaseException as exc:
         bench.do_teardown()
         return False, f"runtime_error: {exc}", {}
@@ -184,7 +262,7 @@ def survey_one(
 
     try:
         cov_data = cov.get_data()
-        measured = cov_data.measured_files()
+        measured = set(cov_data.measured_files()) | set(child_lines)
     except Exception as exc:
         return False, f"coverage_read_error: {exc}", {}
 
@@ -203,7 +281,7 @@ def survey_one(
             if rel.startswith(".."):
                 continue
 
-            lines: Set[int] = set(cov_data.lines(fname) or [])
+            lines: Set[int] = set(cov_data.lines(fname) or []) | child_lines.get(fname, set())
             if not lines:
                 # With source=, coverage also lists files that never ran; they are not deps of this benchmark.
                 continue
