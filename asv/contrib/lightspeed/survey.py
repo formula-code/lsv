@@ -74,7 +74,7 @@ def _add_extension_deps(
     """
     # Collect packages that have extension modules, deduplicate scan dirs
     seen_dirs: Set[str] = set()
-    for mod in sys.modules.values():
+    for mod in list(sys.modules.values()):
         if mod is None:
             continue
         mod_file = getattr(mod, "__file__", None) or ""
