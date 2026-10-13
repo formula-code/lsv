@@ -54,3 +54,18 @@ def test_child_process_files_are_deps(project):
     assert ok, reason
     assert "child.py" in {p.split("/pkg/")[-1] for p in deps}
     assert dict(os.environ) == env_before
+
+
+def test_extension_scan_survives_import_during_scan(tmp_path, monkeypatch):
+    from types import ModuleType
+
+    from asv.contrib.lightspeed.survey import _add_extension_deps
+
+    class Lazy(ModuleType):
+        def __getattr__(self, name):
+            sys.modules.setdefault("lazy_loaded_child", ModuleType("lazy_loaded_child"))
+            raise AttributeError(name)
+
+    monkeypatch.setitem(sys.modules, "lazy_parent", Lazy("lazy_parent"))
+    monkeypatch.delitem(sys.modules, "lazy_loaded_child", raising=False)
+    _add_extension_deps({}, str(tmp_path))
