@@ -1,5 +1,6 @@
 """survey_one records only the source files a benchmark's timed body executes."""
 
+import os
 import sys
 import textwrap
 
@@ -56,3 +57,34 @@ def test_failing_teardown_after_a_failing_body_is_recorded(project):
     ok, reason, deps = survey_one(str(project / "benchmarks"), BenchmarkId("bench_fail.time_boom"), str(project / "pkg"))
     assert (ok, deps) == (False, {}) and reason.startswith("runtime_error: body")
     assert (project / "benchmarks" / "teardowns.txt").read_text() == "x"
+
+
+def test_child_process_files_are_deps(project):
+    (project / "pkg" / "child.py").write_text("VALUE = sum(range(10))\n")
+    (project / "benchmarks" / "bench_child.py").write_text(textwrap.dedent(f"""
+        import subprocess
+        import sys
+
+        def time_child_import():
+            subprocess.run(f"{{sys.executable}} -c 'import pkg.child'", shell=True, check=True, cwd={str(project)!r})
+    """))
+    env_before = dict(os.environ)
+    ok, reason, deps = survey_one(str(project / "benchmarks"), BenchmarkId("bench_child.time_child_import"), str(project / "pkg"))
+    assert ok, reason
+    assert "child.py" in {p.split("/pkg/")[-1] for p in deps}
+    assert dict(os.environ) == env_before
+
+
+def test_extension_scan_survives_import_during_scan(tmp_path, monkeypatch):
+    from types import ModuleType
+
+    from asv.contrib.lightspeed.survey import _add_extension_deps
+
+    class Lazy(ModuleType):
+        def __getattr__(self, name):
+            sys.modules.setdefault("lazy_loaded_child", ModuleType("lazy_loaded_child"))
+            raise AttributeError(name)
+
+    monkeypatch.setitem(sys.modules, "lazy_parent", Lazy("lazy_parent"))
+    monkeypatch.delitem(sys.modules, "lazy_loaded_child", raising=False)
+    _add_extension_deps({}, str(tmp_path))
