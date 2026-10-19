@@ -243,7 +243,7 @@ def survey_one(
                 cov.stop()
             child_lines = _child_lines(child_dir)
     except BaseException as exc:
-        bench.do_teardown()
+        # Teardown runs once, in the finally below; a failing teardown must not stop the survey of the other benchmarks.
         return False, f"runtime_error: {exc}", {}
     finally:
         try:
