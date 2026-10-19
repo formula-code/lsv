@@ -93,7 +93,12 @@ def bytes_to_string_and_fsha(byte_stream: bytes) -> Union[str, bytes]:
     # Replace \f because of http://bugs.python.org/issue19035
     byte_stream = byte_stream.replace(b"\f", b" ")
     byte_stream = byte_stream.replace(b"\r\n", b"\n")
-    byte_string = byte_stream.decode(source_encoding(byte_stream), "replace")
+    try:
+        encoding = source_encoding(byte_stream)
+    except SyntaxError:
+        # A changed file that is not source (a profile dump, an image) has no encoding to detect; it is only hashed.
+        encoding = "utf-8"
+    byte_string = byte_stream.decode(encoding, "replace")
     git_header = b"blob %u\0" % len(byte_string)
     hsh = hashlib.sha1()
     hsh.update(git_header)
