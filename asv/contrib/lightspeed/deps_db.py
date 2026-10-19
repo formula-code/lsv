@@ -140,8 +140,8 @@ class LightspeedDB:
               is NOT a subset of the current method_checksums for that file
               (i.e. some code block it previously touched has changed), OR
           (c) it has a dep on a changed file AND no benchmark was selected
-              by fingerprint matching for that file (fallback to maximise
-              recall — the change may affect uncovered code paths).
+              by fingerprint matching for that file (the change may affect
+              code paths that no benchmark covered).
         """
         affected: Set[str] = set()
 
@@ -178,11 +178,7 @@ class LightspeedDB:
             if file_affected:
                 affected.update(file_affected)
             else:
-                # Fallback: the file changed (different SHA) but no benchmark
-                # was selected by method-level fingerprinting. This happens
-                # when the change is in a function that no benchmark directly
-                # covered (e.g. a utility called indirectly). Select all
-                # benchmarks that depend on this file to maximise recall.
+                # The file changed but no covered block did; select all its dependents so the change is not missed.
                 affected.update(all_dep_bids)
 
         return [_parse_bid(bid_str) for bid_str in affected]

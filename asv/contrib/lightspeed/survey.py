@@ -69,8 +69,7 @@ def _add_extension_deps(
     match, add all C/Cython source files in that package directory to
     *file_deps* with whole-file fingerprints.
 
-    This is used as a fallback when coverage.py finds no Python files inside
-    *source_root* (typical for C extension packages installed non-editable).
+    Coverage.py cannot trace C code, so this is how C/Cython changes select benchmarks.
     """
     # Collect packages that have extension modules, deduplicate scan dirs
     seen_dirs: Set[str] = set()
@@ -267,9 +266,7 @@ def survey_one(
         return False, f"coverage_read_error: {exc}", {}
 
     file_deps: Dict[str, Tuple[list, str]] = {}
-    # A covered source file whose fingerprint can't be computed would otherwise
-    # be dropped silently, making the benchmark blind to changes in it.  Record
-    # the first such file so the caller can mark the benchmark always_affected.
+    # A covered file without a fingerprint makes the benchmark always_affected, so its changes are not missed.
     uncomputable: Optional[str] = None
     if measured:
         for fname in measured:
@@ -293,13 +290,10 @@ def survey_one(
                 continue
             file_deps[fname] = (fp, sha)
 
-    # Always scan for C extension deps — mixed Python/C projects need both.
-    # Previously this only ran as a fallback when no Python coverage was found,
-    # which meant C/Cython source changes were invisible in mixed projects.
+    # Mixed Python/C projects need both the coverage deps and the C extension deps.
     _add_extension_deps(file_deps, source_root)
 
     if uncomputable is not None:
-        # Fall back to always-re-run rather than silently under-covering.
         return False, f"uncomputable fingerprint: {uncomputable}", {}
 
     if not file_deps:
