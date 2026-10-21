@@ -125,5 +125,5 @@ class MeasureImpacted(Command):
 
     @classmethod
     def _on_step_results(cls, result: MeasureResult, step_id):
-        """No-op hook. Override in a fork subclass to persist step results."""
+        """No-op hook. A subclass can override it to store step results."""
         pass

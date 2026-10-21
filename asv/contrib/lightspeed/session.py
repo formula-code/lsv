@@ -211,19 +211,13 @@ def _git_toplevel(source_root):
 
 def _measure_at_commit(repo_root, base_commit, source_root, measure):
     """
-    Run ``measure()`` with the tracked working tree reset to ``base_commit``,
-    preserving untracked files (e.g. staged ``benchmark_*.py``), then restore.
+    Run ``measure()`` with the tracked files reset to ``base_commit``, keeping
+    untracked files (e.g. staged ``benchmark_*.py``), then restore the tree.
 
-    Two cases:
-
-    * HEAD already *is* ``base_commit`` (the normal in-container state after the
-      entrypoint's ``git reset --hard <base>``, with the change under test applied
-      as uncommitted tracked modifications).  A plain ``git stash push`` — *not*
-      ``--include-untracked`` — reverts tracked files to base while leaving
-      untracked benchmark files in place; ``git stash pop`` restores the patch.
-    * HEAD differs from ``base_commit`` (defensive fallback): stash the patched
-      source path, ``git checkout <base> -- <path>`` to reset just that path to
-      base, measure, then restore the path to HEAD and pop the stash.
+    * HEAD is ``base_commit``: ``git stash push`` (tracked files only) reverts
+      the patch; ``git stash pop`` puts it back.
+    * HEAD differs: stash ``source_root``, check it out at ``base_commit``,
+      measure, then check it out at HEAD again and pop the stash.
     """
     head = _git(repo_root, "rev-parse", "HEAD")
     base = _git(repo_root, "rev-parse", base_commit)
@@ -342,8 +336,7 @@ class LightspeedSession:
             for k, v in overrides.items():
                 setattr(conf, k, v)
 
-        # Resolve relative paths against the config file's parent directory so
-        # the session works regardless of the caller's cwd.
+        # Relative config paths are taken from the config file's folder, not the cwd.
         config_dir = config_path.parent
         for attr in ("benchmark_dir", "results_dir", "html_dir", "env_dir"):
             val = getattr(conf, attr, None)
@@ -470,9 +463,8 @@ class LightspeedSession:
             Re-run both passes even if a baseline already exists.
         rounds : int, optional
             Number of timing rounds per benchmark.  Defaults to the benchmark's
-            own setting (typically 2 via the ``processes`` backward-compat
-            attribute).  More rounds → more accurate baseline at the cost of
-            wall-clock time.
+            own setting (typically 2, from the ``processes`` attribute).  More
+            rounds give a more accurate baseline at the cost of wall-clock time.
         repeat : int, optional
             Samples collected per round.  ``None`` means auto (ASV picks 1–10,
             halved when ``rounds > 1``).
@@ -487,8 +479,8 @@ class LightspeedSession:
             code under test).  Untracked files (such as staged ``benchmark_*.py``)
             are preserved.  Requires ``launch_method`` 'spawn' (the default);
             'forkserver' is rejected because it pre-imports the suite once and
-            would not reflect the checkout.  ``None`` disables all git side
-            effects and preserves the previous behavior.
+            would not reflect the checkout.  ``None`` measures the current
+            checkout and runs no git commands.
         """
         t0 = time.perf_counter()
         phases: Dict[str, float] = {}

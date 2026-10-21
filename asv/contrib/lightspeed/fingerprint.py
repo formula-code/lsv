@@ -24,11 +24,8 @@ def file_method_checksums(path: str) -> Tuple[List[int], Optional[str]]:
     """
     Return (all_method_checksums, fsha) for a path.
 
-    ``all_method_checksums``: full list of CRC32 block checksums for
-    the file. 
-    This is what we store in the DB for each benchmark's deps, 
-    and what we compare against at runtime to determine if a benchmark 
-    is affected.
+    ``all_method_checksums``: CRC32 checksums of every block in the file,
+    compared at measure time against the blocks each benchmark ran.
 
     ``fsha``: git-style SHA1.
     """
@@ -46,9 +43,6 @@ def coverage_fingerprint(
     """
     Return (fingerprint, fsha) where fingerprint contains CRC32 checksums
     only for the code blocks that were actually executed (covered_lines).
-
-    This is the core of testmon's dependency tracking: we store only the
-    blocks a benchmark actually ran, not all blocks in the file.
     """
     source, sha = read_source_sha(path)
     if source is None:
@@ -66,9 +60,6 @@ def changed_files_with_fingerprints(
     Given a list of file paths and their previously-stored fshas, return a
     dict of  { filename: (current_method_checksums, current_fsha) }
     for every file whose fsha has changed (or that has no stored fsha).
-
-    This is called at the start of each step to compute the input for
-    LightspeedDB.get_affected_benchmark_ids().
     """
     result: Dict[str, Tuple[List[int], str]] = {}
     for p in paths:
