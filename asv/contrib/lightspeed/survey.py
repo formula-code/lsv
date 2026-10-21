@@ -286,6 +286,9 @@ def survey_one(
         branch=False,
         data_file=None,     # in-memory only
     )
+    # sys.monitoring (the default core from Python 3.14) does not support switch_context.
+    with contextlib.suppress(Exception):
+        cov.set_option("run:core", "ctrace")
     # Child processes may be the only place the benchmark runs project code.
     cov.set_option(
         "run:disable_warnings", [*cov.get_option("run:disable_warnings"), "no-data-collected"]

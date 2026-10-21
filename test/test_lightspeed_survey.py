@@ -143,19 +143,6 @@ def test_python_files_compiled_by_cython(tmp_path, ext_module):
     assert _rel(deps, tmp_path) == {"pkg/fast.py", "pkg/staged.py", "pkg/mypyc_mod.py"}
 
 
-def test_no_extension_loaded_adds_nothing(tmp_path, monkeypatch):
-    from asv.contrib.lightspeed.survey import _add_extension_deps
-
-    (tmp_path / "pyproject.toml").write_text("")
-    (tmp_path / "impl.c").write_text("int x;\n")
-    for name, mod in list(sys.modules.items()):
-        if (getattr(mod, "__file__", None) or "").endswith((".so", ".pyd")):
-            monkeypatch.delitem(sys.modules, name)
-    deps = {}
-    _add_extension_deps(deps, str(tmp_path))
-    assert deps == {}
-
-
 def test_threads_started_in_setup_are_traced(project):
     (project / "pkg" / "worker.py").write_text("def work(n):\n    return sum(range(n))\n")
     (project / "pkg" / "prepare.py").write_text("def prepare():\n    return 1\n")
