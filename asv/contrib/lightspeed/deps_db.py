@@ -1,11 +1,4 @@
-"""
-SQLite database for benchmark dependency tracking and baseline timing.
-
-Tables:
-  benchmark_dep  — which (file, method fingerprints) each benchmark touches
-  benchmark_meta — always_affected flag and coverage failure reason
-  baseline       — step-0 timing measurements for every benchmark
-"""
+"""SQLite database of benchmark dependencies, always_affected marks and baseline timings."""
 
 import logging
 import sqlite3
@@ -16,12 +9,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 @dataclass(frozen=True)
 class BenchmarkId:
-    """Uniquely identifies one (benchmark, parameter-combination) pair.
-
-    ``name`` is the asv_runner fully-qualified name, e.g.
-    ``benchmarks.suite.MyClass.time_sort``.
-    ``param_idx`` is the Cartesian-product index (-1 for non-parameterised).
-    """
+    """An asv_runner benchmark name and its parameter combination index (-1 when not parameterized)."""
     name: str
     param_idx: int = -1
 
@@ -125,7 +113,7 @@ class LightspeedDB:
         self._con.commit()
 
     def get_all_benchmark_ids(self) -> List[BenchmarkId]:
-        """Return every known BenchmarkId (from meta + dep tables)."""
+        """Every BenchmarkId in the meta and dep tables."""
         rows = self._con.execute(
             """
             SELECT DISTINCT benchmark_id FROM benchmark_meta
@@ -139,20 +127,7 @@ class LightspeedDB:
         self,
         changed_files: Dict[str, Tuple[List[int], str]],
     ) -> List[BenchmarkId]:
-        """
-        Return benchmarks that must re-run given a set of changed files.
-
-        A benchmark is affected if:
-          (a) it is marked always_affected, OR
-          (b) it has a dep on a changed file AND the stored fingerprint
-              is NOT a subset of the current method_checksums for that file
-              (i.e. some code block it previously touched has changed), OR
-          (c) it has a dep on a changed file AND no benchmark was selected
-              by fingerprint matching for that file (the change may affect
-              code paths that no benchmark covered), OR
-          (d) a changed compiled source has no dep rows, and the benchmark
-              depends on some compiled source (all benchmarks when none does).
-        """
+        """Benchmarks to re-run for the changed files; the selection rules are in lightspeed_docs.md."""
         affected: Set[str] = set()
 
         rows = self._con.execute(
@@ -160,7 +135,6 @@ class LightspeedDB:
         ).fetchall()
         affected.update(r[0] for r in rows)
 
-        # fingerprint mismatch on changed files
         for filename, (current_checksums, current_fsha) in changed_files.items():
             deps = self._con.execute(
                 """
@@ -207,11 +181,7 @@ class LightspeedDB:
         return {r[0] for r in rows if r[1].endswith(COMPILED_SUFFIXES)}
 
     def get_stored_fshas(self) -> Dict[str, str]:
-        """
-        Return a mapping of filename -> fsha as stored in the dep table.
-        When a file has multiple rows (one per benchmark), we take any one
-        (they all agree at survey time).
-        """
+        """filename -> fsha from the dep table; the rows of one file agree at survey time."""
         rows = self._con.execute(
             "SELECT DISTINCT filename, fsha FROM benchmark_dep"
         ).fetchall()
