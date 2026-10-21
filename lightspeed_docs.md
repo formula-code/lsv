@@ -34,7 +34,7 @@ The dependency tracking comes from [pytest-testmon](https://github.com/tarpas/py
 
 Example: a file has `foo()`, `bar()` and `baz()`. A benchmark calls only `foo()`. An edit to `bar()` does not select the benchmark. An edit to `foo()` does.
 
-C, C++ and Cython files (`.c`, `.cpp`, `.pyx`, `.pxd`, `.h`) are stored as one block for the whole file, so any edit to such a file selects all benchmarks that depend on it.
+Compiled sources (`COMPILED_SUFFIXES` in `deps_db.py`: C, C++, Cython, Rust, CUDA, Fortran and NumPy `.c.src`/`.h.src` templates) are stored as one block for the whole file, so any edit to such a file selects all benchmarks that depend on it. A `.py` file that the build compiles (Cython or mypyc) is also stored as one block. A changed file that is not source text, such as an image, is only hashed.
 
 ### Selection rule
 
@@ -43,8 +43,9 @@ C, C++ and Cython files (`.c`, `.cpp`, `.pyx`, `.pxd`, `.h`) are stored as one b
 1. It is marked `always_affected` (the survey could not measure it, see below).
 2. It depends on a changed file, and one of its stored block checksums is not in the current file.
 3. It depends on a changed file, and rule 2 selected no benchmark for that file. Then all benchmarks that depend on the file are selected, because the change can be in code that no benchmark covered directly.
+4. A changed compiled source has no dependency rows (for example, a new `.c` file). Then all benchmarks that depend on some compiled source are selected, or all benchmarks when none does. A warning is logged. (lsv#13)
 
-A changed file that no benchmark depends on selects nothing.
+Any other changed file that no benchmark depends on selects nothing.
 
 ### Two phases
 
@@ -53,9 +54,10 @@ A changed file that no benchmark depends on selects nothing.
 
 ### What the survey records
 
-- **Only executed files.** A file is a dependency of a benchmark only when the benchmark executed at least one line in it. Coverage.py with `source=` also lists files that never ran; these are skipped. Files outside `--source-root` and files under `site-packages` or `dist-packages` are not recorded. (lsv#5)
+- **Only executed files.** A file is a dependency of a benchmark only when the benchmark executed at least one line in it. Coverage.py with `source=` also lists files that never ran; these are skipped. Files outside `--source-root` and files under `site-packages` or `dist-packages` are not recorded, except the compiled sources below. (lsv#5)
 - **Child Python processes.** During the survey, a child Python process started by the benchmark is also measured. Lightspeed writes a temporary coverage config and a `sitecustomize.py`, sets `COVERAGE_PROCESS_START` and puts the folder first on `PYTHONPATH`. The child starts coverage and then runs the environment's own `sitecustomize`, if there is one. The lines from the child data files are added to the lines of the parent. The environment is restored and the folder is deleted before the timing pass. (lsv#9)
-- **C extensions.** After the coverage step, Lightspeed reads a copy of `sys.modules` and finds the loaded `.so`/`.pyd` modules. For each one it adds every C, C++ and Cython source file under `{source_root}/{top-level package}` as a dependency. When that folder does not exist, it scans all of `--source-root`. The scan uses a copy of `sys.modules` because a module with a lazy `__getattr__` can import other modules during the scan. (lsv#10)
+- **Setup.** Coverage runs during `setup` too, so threads that `setup` starts are traced. Only lines from the benchmark body are kept. Lightspeed uses the C tracer core, because `sys.monitoring` (the default from Python 3.14) cannot switch coverage contexts. (lsv#13)
+- **C extensions.** After the coverage step, Lightspeed reads a copy of `sys.modules`. When any `.so`/`.pyd` module is loaded, it adds every compiled source under the build root as a dependency of the benchmark. The build root is the nearest folder at or above `--source-root` that has a `pyproject.toml`, `setup.py` or `setup.cfg`, but not above the repository root. The scan skips hidden folders, `build`, `dist`, `target`, `node_modules`, `site-packages`, environments and the benchmark folder. It also adds `.py` files that a `setup.py` or `meson.build` compiles, and each `.py` file whose module is loaded as an extension. The build root is scanned once per survey. The scan uses a copy of `sys.modules` because a module with a lazy `__getattr__` can import other modules during the scan. (lsv#10, lsv#13)
 
 ### Benchmarks that are always run
 
