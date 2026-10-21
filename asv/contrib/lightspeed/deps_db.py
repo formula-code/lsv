@@ -7,6 +7,7 @@ Tables:
   baseline       — step-0 timing measurements for every benchmark
 """
 
+import logging
 import sqlite3
 from array import array
 from dataclasses import dataclass
@@ -28,6 +29,13 @@ class BenchmarkId:
         if self.param_idx == -1:
             return self.name
         return f"{self.name}-{self.param_idx}"
+
+log = logging.getLogger("asv.lightspeed")
+
+COMPILED_SUFFIXES = (
+    ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".c.src", ".h.src",
+    ".pyx", ".pxd", ".pxi", ".rs", ".cu", ".cuh", ".f", ".f90",
+)
 
 _ARRAY_TYPE = "i"   # signed 32-bit int, same as testmon
 
@@ -141,7 +149,9 @@ class LightspeedDB:
               (i.e. some code block it previously touched has changed), OR
           (c) it has a dep on a changed file AND no benchmark was selected
               by fingerprint matching for that file (fallback to maximise
-              recall — the change may affect uncovered code paths).
+              recall — the change may affect uncovered code paths), OR
+          (d) a changed compiled source has no dep rows, and the benchmark
+              depends on some compiled source (all benchmarks when none does).
         """
         affected: Set[str] = set()
 
@@ -161,6 +171,15 @@ class LightspeedDB:
                 (filename,),
             ).fetchall()
             if not deps:
+                if filename.endswith(COMPILED_SUFFIXES):
+                    fallback = self._compiled_source_benchmarks() or {
+                        str(b) for b in self.get_all_benchmark_ids()
+                    }
+                    log.warning(
+                        f"lightspeed: compiled source {filename} has no dependency rows; "
+                        f"selecting {len(fallback)} benchmarks"
+                    )
+                    affected.update(fallback)
                 continue
             current_set = set(current_checksums)
             file_affected: Set[str] = set()
@@ -186,6 +205,10 @@ class LightspeedDB:
                 affected.update(all_dep_bids)
 
         return [_parse_bid(bid_str) for bid_str in affected]
+
+    def _compiled_source_benchmarks(self) -> Set[str]:
+        rows = self._con.execute("SELECT DISTINCT benchmark_id, filename FROM benchmark_dep").fetchall()
+        return {r[0] for r in rows if r[1].endswith(COMPILED_SUFFIXES)}
 
     def get_stored_fshas(self) -> Dict[str, str]:
         """

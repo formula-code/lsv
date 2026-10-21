@@ -15,17 +15,18 @@ import ast
 import contextlib
 import glob
 import os
+import re
 import shutil
 import sys
 import tempfile
 from pathlib import Path
-from typing import Dict, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import coverage
 from asv_runner._aux import update_sys_path
 from asv_runner.discovery import get_benchmark_from_name
 
-from .deps_db import BenchmarkId, LightspeedDB
+from .deps_db import COMPILED_SUFFIXES, BenchmarkId, LightspeedDB
 from .fingerprint import coverage_fingerprint, file_method_checksums
 
 
@@ -59,48 +60,115 @@ def _uses_low_level_thread(path: str) -> bool:
 # C extension dependency tracking                                               #
 # --------------------------------------------------------------------------- #
 
+_PROJECT_FILES = ("pyproject.toml", "setup.py", "setup.cfg")
+_BUILD_FILES = ("setup.py", "meson.build")
+_SKIP_DIRS = {"build", "dist", "target", "node_modules", "__pycache__", "site-packages"}
+_PY_LITERAL = re.compile(r"""["']([^"'\s]+\.py)["']""")
+
+BuildScan = Tuple[List[str], Dict[str, List[str]]]
+
+
+def _build_root(source_root: str) -> str:
+    """The nearest folder at or above *source_root* with a project file, not above the repository root."""
+    d = os.path.abspath(source_root)
+    while True:
+        if any(os.path.isfile(os.path.join(d, f)) for f in _PROJECT_FILES):
+            return d
+        parent = os.path.dirname(d)
+        if os.path.exists(os.path.join(d, ".git")) or parent == d:
+            return source_root
+        d = parent
+
+
+def _cythonized_py(build_file: str, root: str) -> Set[str]:
+    """.py files a build file compiles: named next to a .pyx of the same stem, or inside a cythonize(...) call."""
+    try:
+        text = Path(build_file).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return set()
+    names = {
+        m for m in _PY_LITERAL.findall(text)
+        if re.search(r"(?<![\w/.-])" + re.escape(m[:-3]) + r"\.pyx", text)
+    }
+    for m in re.finditer(r"cythonize\s*\(", text):
+        depth, i = 1, m.end()
+        while i < len(text) and depth:
+            depth += {"(": 1, ")": -1}.get(text[i], 0)
+            i += 1
+        names |= set(_PY_LITERAL.findall(text[m.end():i]))
+    found: Set[str] = set()
+    for name in names:
+        for base in {os.path.dirname(build_file), root}:
+            found.update(p for p in glob.glob(os.path.join(base, name)) if os.path.isfile(p))
+    return found
+
+
+def scan_build(source_root: str, benchmark_dir: Optional[str] = None) -> BuildScan:
+    """(compiled sources, other .py files by stem) under the build root of *source_root*."""
+    root = _build_root(source_root)
+    skip = os.path.abspath(benchmark_dir) if benchmark_dir else None
+    compiled: Set[str] = set()
+    py: Dict[str, List[str]] = {}
+    for d, dirs, files in os.walk(root):
+        dirs[:] = [
+            x for x in dirs
+            if not x.startswith(".") and x not in _SKIP_DIRS and os.path.join(d, x) != skip
+            and not any(os.path.exists(os.path.join(d, x, m)) for m in ("conda-meta", "pyvenv.cfg"))
+        ]
+        for f in files:
+            p = os.path.join(d, f)
+            if f.endswith(COMPILED_SUFFIXES):
+                compiled.add(p)
+            elif f.endswith(".py"):
+                py.setdefault(f[:-3], []).append(p)
+            if f in _BUILD_FILES:
+                compiled |= _cythonized_py(p, root)
+    for paths in py.values():
+        paths[:] = [p for p in paths if p not in compiled]
+    return sorted(compiled), py
+
+
+_checksum_cache: Dict[Tuple[str, int, int], Tuple[list, Optional[str]]] = {}
+
+
+def _whole_file(path: str) -> Tuple[list, Optional[str]]:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return [], None
+    key = (path, st.st_mtime_ns, st.st_size)
+    if key not in _checksum_cache:
+        _checksum_cache[key] = file_method_checksums(path)
+    return _checksum_cache[key]
+
+
 def _add_extension_deps(
     file_deps: Dict[str, Tuple[list, str]],
     source_root: str,
+    scan: Optional[BuildScan] = None,
 ) -> None:
     """
-    Scan ``sys.modules`` for loaded C extension modules (``.so``/``.pyd``)
-    whose top-level package has source files under *source_root*.  For each
-    match, add all C/Cython source files in that package directory to
-    *file_deps* with whole-file fingerprints.
-
-    This is used as a fallback when coverage.py finds no Python files inside
-    *source_root* (typical for C extension packages installed non-editable).
+    When any extension module (``.so``/``.pyd``) is loaded, add every compiled
+    source of the project's build root to *file_deps* with whole-file
+    fingerprints, plus each ``.py`` file that is loaded as an extension module
+    (compiled by Cython or mypyc).
     """
-    # Collect packages that have extension modules, deduplicate scan dirs
-    seen_dirs: Set[str] = set()
-    for mod in list(sys.modules.values()):
-        if mod is None:
-            continue
-        mod_file = getattr(mod, "__file__", None) or ""
-        if not (mod_file.endswith(".so") or mod_file.endswith(".pyd")):
-            continue
-        mod_name = getattr(mod, "__name__", "")
-        if not mod_name:
-            continue
-        pkg_root = mod_name.split(".")[0]
-        ext_source_dir = os.path.join(source_root, pkg_root)
-        if os.path.isdir(ext_source_dir):
-            scan_dir = ext_source_dir
-        elif os.path.isdir(source_root):
-            scan_dir = source_root
-        else:
-            continue
-        if scan_dir in seen_dirs:
-            continue
-        seen_dirs.add(scan_dir)
-        for root, _, files in os.walk(scan_dir):
-            for f in files:
-                if f.endswith((".c", ".cpp", ".pyx", ".pxd", ".h")):
-                    fpath = os.path.join(root, f)
-                    fp, sha = file_method_checksums(fpath)
-                    if sha is not None:
-                        file_deps[fpath] = (fp, sha)
+    ext_modules = [
+        getattr(mod, "__name__", "") for mod in list(sys.modules.values())
+        if mod is not None and (getattr(mod, "__file__", None) or "").endswith((".so", ".pyd"))
+    ]
+    ext_modules = [m for m in ext_modules if m]
+    if not ext_modules:
+        return
+    compiled, py = scan if scan is not None else scan_build(source_root)
+    paths = list(compiled)
+    for name in ext_modules:
+        tail = os.sep + name.replace(".", os.sep) + ".py"
+        paths += [p for p in py.get(name.rsplit(".", 1)[-1], []) if p.endswith(tail)]
+    for fpath in paths:
+        fp, sha = _whole_file(fpath)
+        if sha is not None:
+            file_deps[fpath] = (fp, sha)
 
 
 # --------------------------------------------------------------------------- #
@@ -187,6 +255,7 @@ def survey_one(
     benchmark_dir: str,
     bid: BenchmarkId,
     source_root: str,
+    scan: Optional[BuildScan] = None,
 ) -> SurveyResult:
     """
     Run `bid` once using Coverage.py and return the files it touches.
@@ -217,32 +286,41 @@ def survey_one(
         branch=False,
         data_file=None,     # in-memory only
     )
+    # sys.monitoring (the default core from Python 3.14) does not support switch_context.
+    with contextlib.suppress(Exception):
+        cov.set_option("run:core", "ctrace")
     # Child processes may be the only place the benchmark runs project code.
     cov.set_option(
         "run:disable_warnings", [*cov.get_option("run:disable_warnings"), "no-data-collected"]
     )
 
-    skip = False
-    try:
-        skip = bench.do_setup()
-    except BaseException as exc:
-        return False, f"setup_error: {exc}", {}
-
-    if skip:
-        return False, "benchmark_skipped", {}
-
     tracer_before = sys.gettrace()
     profiler_before = sys.getprofile()
 
+    # Coverage runs during setup so that threads started there are traced; only the "body" context is kept.
+    skip = False
+    cov.start()
+    cov.switch_context("setup")
+    try:
+        skip = bench.do_setup()
+    except BaseException as exc:
+        cov.stop()
+        return False, f"setup_error: {exc}", {}
+
+    if skip:
+        cov.stop()
+        return False, "benchmark_skipped", {}
+
     try:
         with _child_coverage(source_root) as child_dir:
-            cov.start()
+            cov.switch_context("body")
             try:
                 bench.func(*bench._current_params)
             finally:
                 cov.stop()
             child_lines = _child_lines(child_dir)
     except BaseException as exc:
+        cov.stop()
         # Teardown runs once, in the finally below; a failing teardown must not stop the survey of the other benchmarks.
         return False, f"runtime_error: {exc}", {}
     finally:
@@ -262,6 +340,7 @@ def survey_one(
 
     try:
         cov_data = cov.get_data()
+        cov_data.set_query_contexts(["^body$"])
         measured = set(cov_data.measured_files()) | set(child_lines)
     except Exception as exc:
         return False, f"coverage_read_error: {exc}", {}
@@ -296,7 +375,7 @@ def survey_one(
     # Always scan for C extension deps — mixed Python/C projects need both.
     # Previously this only ran as a fallback when no Python coverage was found,
     # which meant C/Cython source changes were invisible in mixed projects.
-    _add_extension_deps(file_deps, source_root)
+    _add_extension_deps(file_deps, source_root, scan)
 
     if uncomputable is not None:
         # Fall back to always-re-run rather than silently under-covering.
@@ -325,12 +404,13 @@ def run_survey(
     BenchmarkId -> failure_reason (None = success).
     """
     failures: Dict[BenchmarkId, Optional[str]] = {}
+    scan = scan_build(source_root, benchmark_dir)
 
     for bid in all_bids:
         if verbose:
             print(f"  surveying {bid}...", end=" ", flush=True)
 
-        success, reason, file_deps = survey_one(benchmark_dir, bid, source_root)
+        success, reason, file_deps = survey_one(benchmark_dir, bid, source_root, scan)
 
         if success:
             db.store_deps_batch(bid, file_deps)
