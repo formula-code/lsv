@@ -244,27 +244,16 @@ delta.params                   # dict | None: {"p0": ..., "p1": ...} for paramet
 
 Parameterized benchmarks have the key `name-index`, where `index` is the position in the product of the parameter lists.
 
-### Baselines
-
-```python
-session.get_results()                  # {benchmark_id: baseline median in seconds}
-payload = session.export_baselines()   # {benchmark_id: {"median", "ci_99_a", "ci_99_b", "q_25", "q_75", "repeat", "number"}}
-session.load_baselines(payload)        # writes the rows; returns the count
-```
-
-`load_baselines` needs an existing database. After it, `initialize_diffcheck(force=False)` does nothing when every benchmark has a baseline. Use this to reuse a baseline measured on the same hardware.
-
 ### Exceptions
 
 ```python
-from asv.contrib.lightspeed import ASVError, ConfigError, BenchmarkError, NoBenchmarksError, ProjectShadowed
+from asv.contrib.lightspeed import ASVError, ConfigError, NoBenchmarksError, ProjectShadowed
 ```
 
 - `ASVError`: base class. Also raised when the database is missing, `source_root` is not a folder, or a git command fails.
 - `ConfigError`: the config file cannot be loaded.
 - `NoBenchmarksError`: no benchmarks were found.
 - `ProjectShadowed`: a project package is imported from outside the repository. `.paths` maps each package to its file.
-- `BenchmarkError`: exported, but no code path raises it at present.
 
 A benchmark that fails to run gives `None` values in the result, not an exception.
 
