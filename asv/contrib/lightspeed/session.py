@@ -108,13 +108,13 @@ class BenchmarkDelta:
     delta_pct: Optional[float]         # % change (positive = slower)
     baseline_str: str                  # Human-readable, e.g. "1.230ms"
     current_str: str                   # Human-readable, e.g. "1.450ms"
-    params: Optional[dict]             # Param dict for parameterised benchmarks
+    params: Optional[dict]             # {"p0": ..., "p1": ...} for parameterized benchmarks
 
 
 @dataclass
 class MeasureResult:
     benchmarks: Dict[str, BenchmarkDelta]  # Keyed by benchmark ID string
-    selected_count: int                     # Benchmarks actually re-run
+    selected_count: int                     # Benchmarks run
     total_count: int                        # Total benchmarks in suite
     skipped_count: int                      # Benchmarks skipped (unaffected)
     timing: TimingInfo
