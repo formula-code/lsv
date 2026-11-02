@@ -1,4 +1,4 @@
-"""A changed file that is not source (a cProfile dump) is hashed, not parsed (rich#3546 trials left .prof files)."""
+"""A changed file that is not source text, such as a cProfile dump, is hashed and not parsed."""
 
 from asv.contrib.lightspeed.fingerprint import changed_files_with_fingerprints
 
