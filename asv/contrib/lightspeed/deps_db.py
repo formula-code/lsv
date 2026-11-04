@@ -56,7 +56,7 @@ PRAGMA journal_mode=WAL;
 PRAGMA synchronous=OFF;
 
 CREATE TABLE IF NOT EXISTS benchmark_dep (
-    -- Which (file, method fingerprints) does each benchmark touch?
+    -- Checksums of the blocks of each file that each benchmark executed.
     benchmark_id    TEXT    NOT NULL,
     filename        TEXT    NOT NULL,
     method_checksums BLOB   NOT NULL,   -- array of CRC32 signed ints
@@ -65,14 +65,14 @@ CREATE TABLE IF NOT EXISTS benchmark_dep (
 );
 
 CREATE TABLE IF NOT EXISTS benchmark_meta (
-    -- Metadata per benchmark: always_affected flag, survey coverage status.
+    -- Benchmarks the survey could not measure; they always run.
     benchmark_id    TEXT    PRIMARY KEY,
     always_affected INTEGER NOT NULL DEFAULT 0,
     coverage_failure_reason TEXT
 );
 
 CREATE TABLE IF NOT EXISTS baseline (
-    -- Step-0 measurements for every benchmark.
+    -- Baseline timing for every benchmark.
     benchmark_id    TEXT    PRIMARY KEY,
     median          REAL    NOT NULL,
     ci_99_a         REAL    NOT NULL,
