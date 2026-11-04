@@ -1,6 +1,4 @@
-"""
-Reproduced verbatim from pytest-testmon
-"""
+"""Code block parser and checksums from pytest-testmon, with small changes."""
 
 import ast
 import textwrap
