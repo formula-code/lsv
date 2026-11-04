@@ -34,12 +34,12 @@ class MeasureImpacted(Command):
             help="Run benchmarks affected by changed files and report deltas",
             formatter_class=argparse.RawDescriptionHelpFormatter,
             description=(
-                "Query the dependency database (built by 'asv initialize_diffcheck')\n"
+                "Query the dependency database (built by 'lsv initialize_diffcheck')\n"
                 "to find benchmarks whose execution paths touch the changed files,\n"
                 "run only those benchmarks, and compare against the stored baseline.\n\n"
                 "examples:\n"
-                "  asv measure_impacted --changed-files src/foo.py src/bar.py\n"
-                "  asv measure_impacted --from-git-diff"
+                "  lsv measure_impacted --changed-files src/foo.py src/bar.py\n"
+                "  lsv measure_impacted --from-git-diff"
             ),
         )
         source_group = parser.add_mutually_exclusive_group(required=True)

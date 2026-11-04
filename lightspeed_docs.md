@@ -15,8 +15,8 @@ asv/contrib/lightspeed/
 ├── deps_db.py          SQLite database: dependencies, failures, baseline
 └── project_imports.py  finds where benchmark processes import the project from
 asv/commands/
-├── initialize_diffcheck.py   asv initialize_diffcheck
-└── measure_impacted.py       asv measure_impacted
+├── initialize_diffcheck.py   lsv initialize_diffcheck
+└── measure_impacted.py       lsv measure_impacted
 ```
 
 You need an `asv.conf.json` and a benchmark suite that asv can discover. Lightspeed needs no other configuration file. The benchmarks run in the current Python interpreter (`existing:same`), so the project must already be installed there.
@@ -43,7 +43,7 @@ Compiled sources (`COMPILED_SUFFIXES` in `deps_db.py`: C, C++, Cython, Rust, CUD
 1. It is marked `always_affected` (the survey could not measure it, see below).
 2. It depends on a changed file, and one of its stored block checksums is not in the current file.
 3. It depends on a changed file, and rule 2 selected no benchmark for that file. Then all benchmarks that depend on the file are selected, because the change can be in code that no benchmark covered directly.
-4. A changed compiled source has no dependency rows (for example, a new `.c` file). Then all benchmarks that depend on some compiled source are selected, or all benchmarks when none does. A warning is logged. (lsv#13)
+4. A changed compiled source has no dependency rows (for example, a new `.c` file). Then all benchmarks that depend on some compiled source are selected, or all benchmarks when none does. A warning is logged.
 
 Any other changed file that no benchmark depends on selects nothing.
 
@@ -54,10 +54,10 @@ Any other changed file that no benchmark depends on selects nothing.
 
 ### What the survey records
 
-- **Only executed files.** A file is a dependency of a benchmark only when the benchmark executed at least one line in it. Coverage.py with `source=` also lists files that never ran; these are skipped. Files outside `--source-root` and files under `site-packages` or `dist-packages` are not recorded, except the compiled sources below. (lsv#5)
-- **Child Python processes.** During the survey, a child Python process started by the benchmark is also measured. Lightspeed writes a temporary coverage config and a `sitecustomize.py`, sets `COVERAGE_PROCESS_START` and puts the folder first on `PYTHONPATH`. The child starts coverage and then runs the environment's own `sitecustomize`, if there is one. The lines from the child data files are added to the lines of the parent. The environment is restored and the folder is deleted before the timing pass. (lsv#9)
-- **Setup.** Coverage runs during `setup` too, so threads that `setup` starts are traced. Only lines from the benchmark body are kept. Lightspeed uses the C tracer core, because `sys.monitoring` (the default from Python 3.14) cannot switch coverage contexts. (lsv#13)
-- **C extensions.** After the coverage step, Lightspeed reads a copy of `sys.modules`. When any `.so`/`.pyd` module is loaded, it adds every compiled source under the build root as a dependency of the benchmark. The build root is the nearest folder at or above `--source-root` that has a `pyproject.toml`, `setup.py` or `setup.cfg`, but not above the repository root. The scan skips hidden folders, `build`, `dist`, `target`, `node_modules`, `site-packages`, environments and the benchmark folder. It also adds `.py` files that a `setup.py` or `meson.build` compiles, and each `.py` file whose module is loaded as an extension. The build root is scanned once per survey. The scan uses a copy of `sys.modules` because a module with a lazy `__getattr__` can import other modules during the scan. (lsv#10, lsv#13)
+- **Only executed files.** A file is a dependency of a benchmark only when the benchmark executed at least one line in it. Coverage.py with `source=` also lists files that never ran; these are skipped. Files outside `--source-root` and files under `site-packages` or `dist-packages` are not recorded, except the compiled sources below.
+- **Child Python processes.** During the survey, a child Python process started by the benchmark is also measured. Lightspeed writes a temporary coverage config and a `sitecustomize.py`, sets `COVERAGE_PROCESS_START` and puts the folder first on `PYTHONPATH`. The child starts coverage and then runs the environment's own `sitecustomize`, if there is one. The lines from the child data files are added to the lines of the parent. The environment is restored and the folder is deleted before the timing pass.
+- **Setup.** Coverage runs during `setup` too, so threads that `setup` starts are traced. Only lines from the benchmark body are kept. Lightspeed uses the C tracer core, because `sys.monitoring` (the default from Python 3.14) cannot switch coverage contexts.
+- **C extensions.** After the coverage step, Lightspeed reads a copy of `sys.modules`. When any `.so`/`.pyd` module is loaded, it adds every compiled source under the build root as a dependency of the benchmark. The build root is the nearest folder at or above `--source-root` that has a `pyproject.toml`, `setup.py` or `setup.cfg`, but not above the repository root. The scan skips hidden folders, `build`, `dist`, `target`, `node_modules`, `site-packages`, environments and the benchmark folder. It also adds `.py` files that a `setup.py` or `meson.build` compiles, and each `.py` file whose module is loaded as an extension. The build root is scanned once per survey. The scan uses a copy of `sys.modules` because a module with a lazy `__getattr__` can import other modules during the scan.
 
 ### Benchmarks that are always run
 
@@ -80,7 +80,7 @@ When the survey cannot measure a benchmark, the benchmark is marked `always_affe
 
 A task image can contain two copies of the project: the repository as an editable install, and a wheel that another package pulled in. The benchmark processes can import the wheel, and then the timings measure the wrong code.
 
-Before timing, `measure_impacted` finds the top-level import names of the changed files (the first folder with an `__init__.py`: `numpy/core/x.c` gives `numpy`, `src/skimage/a.py` gives `skimage`). It runs a small probe benchmark with the same spawner and launch method as the real benchmarks. The probe first imports the benchmark suite package, because its `__init__.py` can change `sys.path`, and then imports each name. If a package resolves to a file outside the repository root, `measure_impacted` raises `ProjectShadowed` with the paths and times nothing. The repository root is the git top level of the first changed file, or the `repo` setting when that is not a git repository. (lsv#8)
+Before timing, `measure_impacted` finds the top-level import names of the changed files (the first folder with an `__init__.py`: `numpy/core/x.c` gives `numpy`, `src/skimage/a.py` gives `skimage`). It runs a small probe benchmark with the same spawner and launch method as the real benchmarks. The probe first imports the benchmark suite package, because its `__init__.py` can change `sys.path`, and then imports each name. If a package resolves to a file outside the repository root, `measure_impacted` raises `ProjectShadowed` with the paths and times nothing. The repository root is the git top level of the first changed file, or the `repo` setting when that is not a git repository.
 
 ### Limits
 
@@ -89,12 +89,12 @@ Before timing, `measure_impacted` finds the top-level import names of the change
 
 ---
 
-## `asv initialize_diffcheck`
+## `lsv initialize_diffcheck`
 
 Builds the dependency database and records the baseline.
 
 ```bash
-asv initialize_diffcheck --source-root /workspace/repo/shapely
+lsv initialize_diffcheck --source-root /workspace/repo/shapely
 ```
 
 | Option | Default | Effect |
@@ -114,24 +114,24 @@ Without `--force`, the command does nothing when every benchmark already has a b
 
 ```bash
 # More accurate baseline
-asv initialize_diffcheck --source-root src/mypkg --rounds 3
+lsv initialize_diffcheck --source-root src/mypkg --rounds 3
 
 # Fast baseline
-asv initialize_diffcheck --source-root src/mypkg --rounds 1 --warmup-time 0.5
+lsv initialize_diffcheck --source-root src/mypkg --rounds 1 --warmup-time 0.5
 ```
 
 ---
 
-## `asv measure_impacted`
+## `lsv measure_impacted`
 
 Runs only the affected benchmarks and prints the change against the baseline.
 
 ```bash
 # Explicit file list
-asv measure_impacted --changed-files src/mypkg/foo.py src/mypkg/bar.py
+lsv measure_impacted --changed-files src/mypkg/foo.py src/mypkg/bar.py
 
 # Files from the git working tree
-asv measure_impacted --from-git-diff
+lsv measure_impacted --from-git-diff
 ```
 
 | Option | Default | Effect |
