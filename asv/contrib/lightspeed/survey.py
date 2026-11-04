@@ -1,14 +1,6 @@
-"""
-Coverage survey: run each benchmark function once (not timed) under
-Coverage.py to determine which source files it touches.
+"""Run each benchmark once under Coverage.py to record the source files it executes.
 
-Failure modes handled (as per coverage.py's known limitations):
-  - execv: process replacement, subprocess exits without writing data
-  - _thread: low-level threads not traced, static pre-check
-  - sys.settrace: coverage tracer clobbered, runtime detection
-  - sys.setprofile: profiler installed, runtime detection
-
-Any failure marks the benchmark as always_affected in the DB.
+A benchmark that cannot be measured is marked always_affected.
 """
 
 import ast
@@ -30,15 +22,8 @@ from .deps_db import COMPILED_SUFFIXES, BenchmarkId, LightspeedDB
 from .fingerprint import coverage_fingerprint, file_method_checksums
 
 
-# --------------------------------------------------------------------------- #
-# Low-level thread pre-check                                                   #
-# --------------------------------------------------------------------------- #
-
 def _uses_low_level_thread(path: str) -> bool:
-    """
-    Return True if *path* contains an import of the low-level `_thread`
-    module.  This is a static check; dynamic imports are caught at runtime.
-    """
+    """True if *path* imports ``_thread``, whose threads coverage does not trace."""
     try:
         source = Path(path).read_text(encoding="utf-8", errors="replace")
         tree = ast.parse(source, filename=path)
@@ -55,10 +40,6 @@ def _uses_low_level_thread(path: str) -> bool:
                 return True
     return False
 
-
-# --------------------------------------------------------------------------- #
-# C extension dependency tracking                                               #
-# --------------------------------------------------------------------------- #
 
 _PROJECT_FILES = ("pyproject.toml", "setup.py", "setup.cfg")
 _BUILD_FILES = ("setup.py", "meson.build")
@@ -147,11 +128,9 @@ def _add_extension_deps(
     source_root: str,
     scan: Optional[BuildScan] = None,
 ) -> None:
-    """
-    When any extension module (``.so``/``.pyd``) is loaded, add every compiled
-    source of the project's build root to *file_deps* with whole-file
-    fingerprints, plus each ``.py`` file that is loaded as an extension module
-    (compiled by Cython or mypyc).
+    """When an extension module is loaded, add the compiled sources and compiled .py files as whole-file deps.
+
+    Coverage.py cannot trace compiled code, so this is how changes to it select benchmarks.
     """
     ext_modules = [
         getattr(mod, "__name__", "") for mod in list(sys.modules.values())
@@ -170,10 +149,6 @@ def _add_extension_deps(
         if sha is not None:
             file_deps[fpath] = (fp, sha)
 
-
-# --------------------------------------------------------------------------- #
-# Child process coverage                                                        #
-# --------------------------------------------------------------------------- #
 
 # Shadows any sitecustomize on the child's path, so it runs that one afterwards.
 _CHILD_SITECUSTOMIZE = """\
@@ -239,16 +214,8 @@ def _child_lines(child_dir: str) -> Dict[str, Set[int]]:
     return lines
 
 
-# --------------------------------------------------------------------------- #
-# Single-benchmark survey                                                       #
-# --------------------------------------------------------------------------- #
-
-SurveyResult = Tuple[
-    # success, failure reason / None on success, filename -> (fingerprint, fsha)
-    bool,
-    Optional[str],
-    Dict[str, Tuple[list, str]],
-]
+# (success, failure reason or None, filename -> (fingerprint, fsha))
+SurveyResult = Tuple[bool, Optional[str], Dict[str, Tuple[list, str]]]
 
 
 def survey_one(
@@ -257,18 +224,11 @@ def survey_one(
     source_root: str,
     scan: Optional[BuildScan] = None,
 ) -> SurveyResult:
-    """
-    Run `bid` once using Coverage.py and return the files it touches.
-
-    Returns ``(success, failure_reason, file_deps)`` where ``file_deps``
-    maps absolute filename to ``(coverage_fingerprint, fsha)``.
-    """
+    """Run *bid* once under Coverage.py and return the files it executes."""
     update_sys_path(benchmark_dir)
 
-    asv_name = str(bid)  # "name-paramidx" or just "name"
-
     try:
-        bench = get_benchmark_from_name(benchmark_dir, asv_name)
+        bench = get_benchmark_from_name(benchmark_dir, str(bid))
     except Exception as exc:
         return False, f"load_error: {exc}", {}
 
@@ -346,13 +306,10 @@ def survey_one(
         return False, f"coverage_read_error: {exc}", {}
 
     file_deps: Dict[str, Tuple[list, str]] = {}
-    # A covered source file whose fingerprint can't be computed would otherwise
-    # be dropped silently, making the benchmark blind to changes in it.  Record
-    # the first such file so the caller can mark the benchmark always_affected.
+    # A covered file without a fingerprint makes the benchmark always_affected, so its changes are not missed.
     uncomputable: Optional[str] = None
     if measured:
         for fname in measured:
-            # Only track files inside the source root we care about.
             try:
                 rel = os.path.relpath(fname, source_root)
             except ValueError:
@@ -372,13 +329,10 @@ def survey_one(
                 continue
             file_deps[fname] = (fp, sha)
 
-    # Always scan for C extension deps — mixed Python/C projects need both.
-    # Previously this only ran as a fallback when no Python coverage was found,
-    # which meant C/Cython source changes were invisible in mixed projects.
+    # Mixed Python/C projects need both the coverage deps and the C extension deps.
     _add_extension_deps(file_deps, source_root, scan)
 
     if uncomputable is not None:
-        # Fall back to always-re-run rather than silently under-covering.
         return False, f"uncomputable fingerprint: {uncomputable}", {}
 
     if not file_deps:
@@ -387,22 +341,14 @@ def survey_one(
     return True, None, file_deps
 
 
-# --------------------------------------------------------------------------- #
-# Full survey over all benchmarks                                               #
-# --------------------------------------------------------------------------- #
-
 def run_survey(
     benchmark_dir: str,
     source_root: str,
     db: LightspeedDB,
-    all_bids: list,  # List[BenchmarkId]
+    all_bids: List[BenchmarkId],
     verbose: bool = False,
 ) -> Dict[BenchmarkId, Optional[str]]:
-    """
-    Run the coverage survey for every benchmark in *all_bids*.
-    Writes results into *db* and returns a mapping of
-    BenchmarkId -> failure_reason (None = success).
-    """
+    """Survey every benchmark into *db*; return BenchmarkId -> failure reason (None on success)."""
     failures: Dict[BenchmarkId, Optional[str]] = {}
     scan = scan_build(source_root, benchmark_dir)
 

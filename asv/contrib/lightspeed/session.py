@@ -1,20 +1,6 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
 
-"""
-Python API for ASV Lightspeed — selective benchmark re-running for RL pipelines.
-
-    from asv.contrib.lightspeed import LightspeedSession
-
-    session = LightspeedSession(
-        "/workspace/repo/benchmarks/asv.conf.json",
-        overrides={"results_dir": "/output/results"},
-        machine="ci",
-    )
-    init   = session.initialize_diffcheck(source_root="/workspace/repo/shapely")
-    result = session.measure_impacted(changed_files=["src/foo.py"])
-    for name, delta in result.benchmarks.items():
-        print(f"{name}: {delta.baseline_str} -> {delta.current_str} ({delta.delta_pct:+.1f}%)")
-"""
+"""Python API for Lightspeed: re-run only the benchmarks that the changed files affect; see lightspeed_docs.md."""
 
 import itertools
 import json
@@ -32,7 +18,7 @@ from ...config import Config
 from ...environment import get_environments
 from ...runner import run_benchmarks
 from ... import util
-from .deps_db import BenchmarkId, LightspeedDB, _parse_bid
+from .deps_db import BenchmarkId, LightspeedDB
 from .fingerprint import changed_files_with_fingerprints
 from .project_imports import import_packages, outside_root, probe_imports
 from .survey import run_survey
@@ -40,24 +26,12 @@ from .survey import run_survey
 _DEPS_DB_FILENAME = ".lightspeed_deps.db"
 
 
-# ---------------------------------------------------------------------------
-# Exceptions
-# ---------------------------------------------------------------------------
-
 class ASVError(Exception):
     """Base exception for all Lightspeed API errors."""
 
 
 class ConfigError(ASVError):
     """Invalid or unreadable config file."""
-
-
-class BenchmarkError(ASVError):
-    """A benchmark failed to run."""
-    def __init__(self, message, *, benchmark_name=None, stderr=None):
-        super().__init__(message)
-        self.benchmark_name = benchmark_name
-        self.stderr = stderr
 
 
 class NoBenchmarksError(ASVError):
@@ -80,10 +54,6 @@ def check_project_imports(env, benchmark_dir, launch_method, packages, repo_root
         raise ProjectShadowed(bad)
     return found
 
-
-# ---------------------------------------------------------------------------
-# Result dataclasses
-# ---------------------------------------------------------------------------
 
 @dataclass
 class TimingInfo:
@@ -119,10 +89,6 @@ class MeasureResult:
     skipped_count: int                      # Benchmarks skipped (unaffected)
     timing: TimingInfo
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _fmt(s: Optional[float]) -> str:
     if s is None:
@@ -210,20 +176,9 @@ def _git_toplevel(source_root):
 
 
 def _measure_at_commit(repo_root, base_commit, source_root, measure):
-    """
-    Run ``measure()`` with the tracked working tree reset to ``base_commit``,
-    preserving untracked files (e.g. staged ``benchmark_*.py``), then restore.
+    """Run ``measure()`` with the tracked files at ``base_commit``, keeping untracked files, then restore the tree.
 
-    Two cases:
-
-    * HEAD already *is* ``base_commit`` (the normal in-container state after the
-      entrypoint's ``git reset --hard <base>``, with the change under test applied
-      as uncommitted tracked modifications).  A plain ``git stash push`` — *not*
-      ``--include-untracked`` — reverts tracked files to base while leaving
-      untracked benchmark files in place; ``git stash pop`` restores the patch.
-    * HEAD differs from ``base_commit`` (defensive fallback): stash the patched
-      source path, ``git checkout <base> -- <path>`` to reset just that path to
-      base, measure, then restore the path to HEAD and pop the stash.
+    When HEAD is not ``base_commit``, only ``source_root`` is checked out at ``base_commit``.
     """
     head = _git(repo_root, "rev-parse", "HEAD")
     base = _git(repo_root, "rev-parse", base_commit)
@@ -301,28 +256,8 @@ def _extract_deltas(
     return out
 
 
-# ---------------------------------------------------------------------------
-# LightspeedSession
-# ---------------------------------------------------------------------------
-
 class LightspeedSession:
-    """
-    Main entry point for the Lightspeed Python API.
-
-    Parameters
-    ----------
-    config_path : str or Path
-        Path to ``asv.conf.json``.  Resolved to absolute; relative paths in
-        the config are resolved against this file's parent directory.
-    overrides : dict, optional
-        Config field overrides applied in-memory.  Any key valid in the JSON
-        config is valid here (e.g. ``results_dir``, ``repo``, ``branches``).
-    machine : str, optional
-        Machine name.  Defaults to ``socket.gethostname()``.
-        ``{results_dir}/{machine}/machine.json`` is created automatically.
-    python : str, optional
-        Python spec.  ``"same"`` (default) uses the current interpreter.
-    """
+    """An asv config with *overrides* applied; the parameters are in lightspeed_docs.md."""
 
     def __init__(
         self,
@@ -342,8 +277,7 @@ class LightspeedSession:
             for k, v in overrides.items():
                 setattr(conf, k, v)
 
-        # Resolve relative paths against the config file's parent directory so
-        # the session works regardless of the caller's cwd.
+        # Relative config paths are taken from the config file's folder, not the cwd.
         config_dir = config_path.parent
         for attr in ("benchmark_dir", "results_dir", "html_dir", "env_dir"):
             val = getattr(conf, attr, None)
@@ -354,12 +288,7 @@ class LightspeedSession:
 
     @classmethod
     def _from_conf(cls, conf, config_path=None, *, machine=None, python="same"):
-        """
-        Create a session from an already-loaded Config object.
-
-        Used by CLI commands, which receive a pre-loaded conf from ASV's
-        ``Command.run_from_args`` machinery.  Paths in *conf* are left as-is.
-        """
+        """A session from a loaded Config, for the CLI commands; paths in *conf* are used as they are."""
         session = cls.__new__(cls)
         session._setup(conf, config_path, machine, python)
         return session
@@ -371,8 +300,6 @@ class LightspeedSession:
         self._machine = machine or socket.gethostname()
         self._python = python
         self._ensure_machine_dir()
-
-    # --- Properties --------------------------------------------------------
 
     @property
     def config_path(self) -> Optional[Path]:
@@ -406,8 +333,6 @@ class LightspeedSession:
     def deps_db_path(self) -> Path:
         return Path(self._conf.results_dir) / _DEPS_DB_FILENAME
 
-    # --- Internal ----------------------------------------------------------
-
     def _ensure_machine_dir(self):
         machine_dir = Path(self._conf.results_dir) / self._machine
         machine_dir.mkdir(parents=True, exist_ok=True)
@@ -440,8 +365,6 @@ class LightspeedSession:
             b.save()
             return b
 
-    # --- Public API --------------------------------------------------------
-
     def initialize_diffcheck(
         self,
         source_root,
@@ -452,43 +375,9 @@ class LightspeedSession:
         warmup_time: Optional[float] = None,
         base_commit: Optional[str] = None,
     ) -> InitResult:
-        """
-        Survey benchmark dependencies and record baseline timing.
+        """Survey the benchmark dependencies, then time every benchmark and store the baseline.
 
-        Pass 1 — coverage survey: record which source files each benchmark
-        touches, storing method-level fingerprints in ``.lightspeed_deps.db``.
-
-        Pass 2 — baseline timing: measure current performance via ASV's full
-        timing protocol and store results in the same SQLite database.
-
-        Parameters
-        ----------
-        source_root : str or Path
-            Root of the source package to analyse.  Only files within this
-            directory are recorded in the dependency table.
-        force : bool
-            Re-run both passes even if a baseline already exists.
-        rounds : int, optional
-            Number of timing rounds per benchmark.  Defaults to the benchmark's
-            own setting (typically 2 via the ``processes`` backward-compat
-            attribute).  More rounds → more accurate baseline at the cost of
-            wall-clock time.
-        repeat : int, optional
-            Samples collected per round.  ``None`` means auto (ASV picks 1–10,
-            halved when ``rounds > 1``).
-        warmup_time : float, optional
-            Seconds spent warming up before timing begins.  ``None`` means auto
-            (≈1 s for multi-round, ≈5 s for single-round).
-        base_commit : str, optional
-            When set and a baseline must be measured (cache miss or ``force``),
-            stash the working tree, reset the tracked source to this commit,
-            measure, then restore — so the recorded baseline reflects the base
-            commit rather than whatever is currently checked out (e.g. patched
-            code under test).  Untracked files (such as staged ``benchmark_*.py``)
-            are preserved.  Requires ``launch_method`` 'spawn' (the default);
-            'forkserver' is rejected because it pre-imports the suite once and
-            would not reflect the checkout.  ``None`` disables all git side
-            effects and preserves the previous behavior.
+        With *base_commit*, both passes run on the tracked files of that commit; untracked files stay.
         """
         t0 = time.perf_counter()
         phases: Dict[str, float] = {}
@@ -577,29 +466,9 @@ class LightspeedSession:
         warmup_time: Optional[float] = None,
         packages: Optional[List[str]] = None,
     ) -> MeasureResult:
-        """
-        Selectively re-run benchmarks affected by code changes.
+        """Time the benchmarks that *changed_files* (or ``git diff HEAD``) affect, against the baseline.
 
-        Exactly one of ``from_git_diff=True`` or ``changed_files=[...]``
-        must be provided.
-
-        Parameters
-        ----------
-        from_git_diff : bool
-            Detect changed files via ``git diff HEAD --name-only``.
-        changed_files : list of str or Path, optional
-            Explicit list of changed file paths.  Takes precedence over
-            ``from_git_diff`` if both are supplied.
-        rounds : int, optional
-            Number of timing rounds.  For per-step RL measurements, ``1`` is
-            usually sufficient since deltas are relative to the baseline.
-        repeat : int, optional
-            Samples per round.  ``None`` means auto.
-        warmup_time : float, optional
-            Warmup seconds.  ``None`` means auto.
-        packages : list of str, optional
-            Import names of the project.  ``None`` derives them from the changed files.
-            Raises ProjectShadowed before timing when one imports from outside the repository.
+        Raises ProjectShadowed before timing when a project package imports from outside the repository.
         """
         if not from_git_diff and changed_files is None:
             raise ValueError("Provide either from_git_diff=True or changed_files=[...]")
@@ -673,95 +542,3 @@ class LightspeedSession:
             skipped_count=total_count - len(filtered),
             timing=TimingInfo(total_s=time.perf_counter() - t0),
         )
-
-    def get_results(self) -> Dict[str, Optional[float]]:
-        """
-        Return stored baseline timing from the SQLite database.
-
-        Returns
-        -------
-        dict[str, float | None]
-            Map of benchmark ID string to baseline median time in seconds.
-        """
-        if not self.deps_db_path.exists():
-            return {}
-        db = LightspeedDB(str(self.deps_db_path))
-        rows = db._con.execute(
-            "SELECT benchmark_id, median FROM baseline"
-        ).fetchall()
-        return {r["benchmark_id"]: r["median"] for r in rows}
-
-    def export_baselines(self) -> Dict[str, Dict[str, float]]:
-        """
-        Dump every stored baseline as a serializable mapping.
-
-        Returns
-        -------
-        dict[str, dict]
-            ``{benchmark_id_str: {"median", "ci_99_a", "ci_99_b", "q_25", "q_75",
-            "repeat", "number"}}``.  Empty dict if the deps DB does not exist or
-            no baselines have been recorded yet.
-
-        Notes
-        -----
-        Pair with :meth:`load_baselines` to ship measured baselines between
-        runs (e.g. cache the results of ``initialize_diffcheck`` keyed by
-        machine fingerprint, then reload them on a fresh sandbox to skip the
-        timing pass).
-        """
-        if not self.deps_db_path.exists():
-            return {}
-        db = LightspeedDB(str(self.deps_db_path))
-        out: Dict[str, Dict[str, float]] = {}
-        for bid in db.get_all_benchmark_ids():
-            row = db.get_baseline(bid)
-            if row is None:
-                continue
-            out[str(bid)] = {
-                "median":  row["median"],
-                "ci_99_a": row["ci_99_a"],
-                "ci_99_b": row["ci_99_b"],
-                "q_25":    row["q_25"],
-                "q_75":    row["q_75"],
-                "repeat":  row["repeat"],
-                "number":  row["number"],
-            }
-        return out
-
-    def load_baselines(self, payload: Dict[str, Dict[str, float]]) -> int:
-        """
-        Bulk-insert (or replace) baseline timings from a serialized payload.
-
-        Parameters
-        ----------
-        payload : dict
-            Output of :meth:`export_baselines` from a prior run on equivalent
-            hardware.  Each value must contain the same keys exported there.
-
-        Returns
-        -------
-        int
-            Number of baseline rows written.
-
-        Raises
-        ------
-        FileNotFoundError
-            If ``deps_db_path`` does not yet exist; stage a cached deps DB
-            (or run :meth:`initialize_diffcheck` once) before calling this.
-
-        Notes
-        -----
-        After this returns, ``initialize_diffcheck(force=False)`` will
-        short-circuit when every benchmark id has a baseline row.
-        """
-        if not self.deps_db_path.exists():
-            raise FileNotFoundError(
-                f"deps DB missing at {self.deps_db_path}; "
-                "stage a cached copy or run initialize_diffcheck first"
-            )
-        db = LightspeedDB(str(self.deps_db_path))
-        n = 0
-        for bid_str, stats in payload.items():
-            db.store_baseline(_parse_bid(bid_str), stats["median"], stats)
-            n += 1
-        return n

@@ -4,7 +4,8 @@ import argparse
 
 from ..console import log
 from ..contrib.lightspeed.session import LightspeedSession, MeasureResult
-from . import Command, common_args
+from . import Command
+from .initialize_diffcheck import add_lightspeed_arguments, lightspeed_kwargs
 
 
 def _print_delta_table(result: MeasureResult):
@@ -33,16 +34,14 @@ class MeasureImpacted(Command):
             help="Run benchmarks affected by changed files and report deltas",
             formatter_class=argparse.RawDescriptionHelpFormatter,
             description=(
-                "Query the dependency database (built by 'asv initialize_diffcheck')\n"
+                "Query the dependency database (built by 'lsv initialize_diffcheck')\n"
                 "to find benchmarks whose execution paths touch the changed files,\n"
                 "run only those benchmarks, and compare against the stored baseline.\n\n"
                 "examples:\n"
-                "  asv measure_impacted --changed-files src/foo.py src/bar.py\n"
-                "  asv measure_impacted --from-git-diff"
+                "  lsv measure_impacted --changed-files src/foo.py src/bar.py\n"
+                "  lsv measure_impacted --from-git-diff"
             ),
         )
-        common_args.add_environment(parser, default_same=True)
-
         source_group = parser.add_mutually_exclusive_group(required=True)
         source_group.add_argument(
             "--changed-files", nargs="+", metavar="FILE",
@@ -56,24 +55,7 @@ class MeasureImpacted(Command):
             "--step-id", default=None, metavar="ID",
             help="Optional step label passed to _on_step_results() hook.",
         )
-        common_args.add_bench(parser)
-        common_args.add_launch_method(parser)
-        parser.add_argument(
-            "--rounds", type=int, default=None, metavar="N",
-            help=(
-                "Number of timing rounds per benchmark. For per-step RL "
-                "measurements 1 is usually sufficient. Defaults to the "
-                "benchmark's own setting (typically 2)."
-            ),
-        )
-        parser.add_argument(
-            "--repeat", type=int, default=None, metavar="N",
-            help="Samples collected per round (default: auto, 1–10).",
-        )
-        parser.add_argument(
-            "--warmup-time", type=float, default=None, metavar="SECS",
-            help="Seconds spent warming up before timing (default: auto).",
-        )
+        add_lightspeed_arguments(parser)
         parser.set_defaults(func=cls.run_from_args)
         return parser
 
@@ -84,10 +66,7 @@ class MeasureImpacted(Command):
             changed_files=args.changed_files,
             from_git_diff=args.from_git_diff,
             step_id=args.step_id,
-            rounds=args.rounds,
-            repeat=args.repeat,
-            warmup_time=args.warmup_time,
-            launch_method=getattr(args, "launch_method", None),
+            **lightspeed_kwargs(args),
         )
 
     @classmethod
@@ -125,5 +104,5 @@ class MeasureImpacted(Command):
 
     @classmethod
     def _on_step_results(cls, result: MeasureResult, step_id):
-        """No-op hook. Override in a fork subclass to persist step results."""
+        """No-op hook. A subclass can override it to store step results."""
         pass

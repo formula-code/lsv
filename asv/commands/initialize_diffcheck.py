@@ -7,6 +7,34 @@ from ..contrib.lightspeed.session import LightspeedSession
 from . import Command, common_args
 
 
+def add_lightspeed_arguments(parser):
+    """The options that initialize_diffcheck and measure_impacted share."""
+    common_args.add_environment(parser, default_same=True)
+    common_args.add_bench(parser)
+    common_args.add_launch_method(parser)
+    parser.add_argument(
+        "--rounds", type=int, default=None, metavar="N",
+        help="Timing rounds per benchmark (default: the benchmark's own setting, typically 2).",
+    )
+    parser.add_argument(
+        "--repeat", type=int, default=None, metavar="N",
+        help="Samples collected per round (default: auto, 1–10).",
+    )
+    parser.add_argument(
+        "--warmup-time", type=float, default=None, metavar="SECS",
+        help="Seconds spent warming up before timing (default: auto).",
+    )
+
+
+def lightspeed_kwargs(args):
+    return dict(
+        rounds=args.rounds,
+        repeat=args.repeat,
+        warmup_time=args.warmup_time,
+        launch_method=getattr(args, "launch_method", None),
+    )
+
+
 class InitializeDiffcheck(Command):
     @classmethod
     def setup_arguments(cls, subparsers):
@@ -23,7 +51,6 @@ class InitializeDiffcheck(Command):
                 "Results are stored in {results_dir}/.lightspeed_deps.db.\n"
             ),
         )
-        common_args.add_environment(parser, default_same=True)
         parser.add_argument(
             "--source-root",
             required=True,
@@ -35,24 +62,7 @@ class InitializeDiffcheck(Command):
             action="store_true",
             help="Re-run both passes even if a baseline already exists.",
         )
-        common_args.add_bench(parser)
-        common_args.add_launch_method(parser)
-        parser.add_argument(
-            "--rounds", type=int, default=None, metavar="N",
-            help=(
-                "Number of timing rounds per benchmark. Defaults to the "
-                "benchmark's own setting (typically 2). More rounds produce a "
-                "more accurate baseline at the cost of wall-clock time."
-            ),
-        )
-        parser.add_argument(
-            "--repeat", type=int, default=None, metavar="N",
-            help="Samples collected per round (default: auto, 1–10).",
-        )
-        parser.add_argument(
-            "--warmup-time", type=float, default=None, metavar="SECS",
-            help="Seconds spent warming up before timing (default: auto).",
-        )
+        add_lightspeed_arguments(parser)
         parser.set_defaults(func=cls.run_from_args)
         return parser
 
@@ -62,10 +72,7 @@ class InitializeDiffcheck(Command):
             conf=conf,
             source_root=args.source_root,
             force=args.force,
-            rounds=args.rounds,
-            repeat=args.repeat,
-            warmup_time=args.warmup_time,
-            launch_method=getattr(args, "launch_method", None),
+            **lightspeed_kwargs(args),
         )
 
     @classmethod
